@@ -1,6 +1,6 @@
 {
   "name": "@joaomj/pi-claude-usage",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Pi extension showing remaining Claude subscription quota (5-hour session and weekly windows) in the footer",
   "license": "MIT",
   "author": "Joao Marcos",
