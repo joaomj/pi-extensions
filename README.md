@@ -32,9 +32,13 @@ pi --no-extensions -e ./extensions/claude-usage/src/index.ts
 Each release is driven by [changesets](https://github.com/changesets/changesets):
 
 1. Add a changeset file under `.changeset/` describing the bump (`patch`, `minor`, or `major`) for the changed packages.
-2. Merge to `main`. The release workflow opens a version PR; merging it publishes the bumped packages to npm via trusted publishing (no tokens).
+2. Merge to `main`. The release workflow opens a version PR with bumped versions and changelogs.
+3. Merge the version PR. Nothing is published to npm at this point.
+4. Create a GitHub Release with a tag that points at the merged commit (for example `v0.1.1`).
+5. Publishing the release stages every package version that is not yet on npm, using trusted publishing (no tokens).
+6. Approve the staged packages on npmjs.com. Staged publishing requires a human with 2FA, so this approval cannot be automated.
 
-First-time setup per published package: on npmjs.com, package Settings → Trusted Publisher → add GitHub repository `joaomj/pi-extensions`.
+First-time setup per package on npmjs.com: package Settings → Trusted Publisher → add GitHub repository `joaomj/pi-extensions` with workflow `release.yml`. The trusted publisher only needs `npm stage publish`. Allowing direct `npm publish` would remove the approval step but would also let any published release in this repository push to npm unattended.
 
 ## License
 

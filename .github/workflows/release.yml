@@ -3,14 +3,20 @@ name: Release
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
 
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  version:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,17 +34,123 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Create Release Pull Request or publish
+      - name: Create release pull request
         uses: changesets/action@v1
         with:
           title: "chore: release"
           commit: "chore: release"
           version: pnpm run changeset-version
-          publish: pnpm run changeset-publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  stage:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install npm with staged publishing support
+        run: npm install -g npm@^11.15.0
+
+      - name: Stage unreleased package versions
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync, spawnSync } from 'node:child_process';
+          import { readdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const registry = 'https://registry.npmjs.org';
+
+          function isPublished(name, version) {
+            try {
+              execFileSync('npm', [
+                'view', `${name}@${version}`, 'version', '--json',
+                `--registry=${registry}`,
+              ], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+                timeout: 60_000,
+              });
+              return true;
+            } catch (error) {
+              if (error.status === 1 && error.stdout) {
+                let response;
+                try {
+                  response = JSON.parse(error.stdout);
+                } catch {
+                  response = null;
+                }
+                if (response?.error?.code === 'E404') return false;
+              }
+              throw new Error(`Could not check npm for ${name}@${version}`, { cause: error });
+            }
+          }
+
+          const packages = readdirSync('extensions', { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => {
+              const dir = join('extensions', entry.name);
+              const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+              return { dir, name: manifest.name, version: manifest.version };
+            })
+            .filter((pkg) => pkg.name && pkg.version);
+
+          let staged = 0;
+          for (const pkg of packages) {
+            if (isPublished(pkg.name, pkg.version)) {
+              console.log(`${pkg.name}@${pkg.version}: already published`);
+              continue;
+            }
+
+            const result = spawnSync('npm', ['stage', 'publish'], {
+              cwd: pkg.dir,
+              encoding: 'utf8',
+              timeout: 120_000,
+            });
+            const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+            if (result.error) {
+              throw new Error(`Could not stage ${pkg.name}@${pkg.version}: ${result.error.message}`, {
+                cause: result.error,
+              });
+            }
+
+            if (result.status !== 0) {
+              if (/already (been )?(staged|published)|previously staged|cannot publish over/i.test(output)) {
+                console.log(`${pkg.name}@${pkg.version}: already staged, awaiting approval`);
+                staged += 1;
+                continue;
+              }
+              throw new Error(`Could not stage ${pkg.name}@${pkg.version}:\n${output.trim()}`);
+            }
+
+            process.stdout.write(output);
+            console.log(`${pkg.name}@${pkg.version}: staged`);
+            staged += 1;
+          }
+
+          if (staged === 0) {
+            console.log('No unpublished package versions at this tag.');
+          } else {
+            console.log(`${staged} package version(s) staged. Approve them on npmjs.com.`);
+          }
+          NODE
