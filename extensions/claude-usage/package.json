@@ -1,0 +1,43 @@
+{
+  "name": "@joaomj/pi-claude-usage",
+  "version": "0.0.0",
+  "description": "Pi extension showing remaining Claude subscription quota (5-hour session and weekly windows) in the footer",
+  "license": "MIT",
+  "author": "Joao Marcos",
+  "keywords": [
+    "pi-package"
+  ],
+  "homepage": "https://github.com/joaomj/pi-extensions/tree/main/extensions/claude-usage",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joaomj/pi-extensions",
+    "directory": "extensions/claude-usage"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "tsc": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
