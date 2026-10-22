@@ -1,6 +1,6 @@
 # pi-claude-usage
 
-Pi extension that shows your remaining Claude subscription quota — the 5-hour session window and the weekly window — as a segment in Pi's footer.
+Pi extension that shows your remaining Claude subscription quota — the 5-hour session window and the weekly window — as a segment in Pi's footer while the session uses Claude.
 
 ```text
 claude 5h:100% wk:91% ↻1d21h
@@ -21,7 +21,18 @@ After installation, restart Pi or run `/reload`.
 
 ## Usage
 
-The segment refreshes on session start and after each agent run. API results are cached for 5 minutes and the endpoint is hit at most once per minute, so the footer never slows down your session.
+The segment appears only when the active model uses Claude:
+
+- `claude-directsdk`, or another provider whose id starts with `claude`.
+- `anthropic`, when Pi is signed in to that provider with OAuth.
+
+Sessions that use another provider do not load the quota code, read your Claude login, or contact the usage endpoint in the background. Running `/claude-account` is an explicit exception.
+
+The extension loads in the background after a Claude session starts. When a cached value exists, it appears immediately. Keychain and network work starts two seconds after the session starts, and only when the cached value is missing or older than five minutes. Switching to a non-Claude model clears the segment. Switching back restores it from the cache.
+
+After each agent run, the extension refreshes the value. It sends at most one usage request per minute and caches API results for five minutes, so the footer never slows down your session.
+
+### Choose an account
 
 When several Claude logins exist on the machine, pick which account the footer shows:
 
@@ -29,7 +40,9 @@ When several Claude logins exist on the machine, pick which account the footer s
 /claude-account
 ```
 
-The picker lists every login found together with its live weekly remainder so accounts are distinguishable. The choice persists in `~/.config/pi-claude-usage/config.json`; `/claude-account auto` returns to first-working-wins.
+The picker lists every login found together with its live weekly remainder so accounts are distinguishable. The choice persists in `~/.config/pi-claude-usage/config.json`.
+
+An explicit choice never falls back to another account. If the selected login cannot return data, the segment keeps the last value for that login or clears. `/claude-account auto` returns to first-working-wins.
 
 ## Develop locally
 
@@ -43,6 +56,8 @@ pi --no-extensions -e ./extensions/claude-usage/src/index.ts
 ## How it works
 
 Numbers come from the same unofficial endpoint Claude Code's own `/status` uses (`GET https://api.anthropic.com/api/oauth/usage`). The OAuth token is sent only there — never logged, never persisted. Per-account snapshots cache under `~/.cache/pi-claude-usage.json`.
+
+The extension entry point has no runtime imports. The quota implementation, Keychain access, and network client load only when the session switches to Claude.
 
 ## Limitations
 

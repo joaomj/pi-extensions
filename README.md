@@ -9,7 +9,7 @@ pi install npm:@joaomj/pi-claude-usage
 | Extension | npm package | What it does |
 |---|---|---|
 | [background-bash](extensions/background-bash) | `@joaomj/pi-background-bash` | Keeps shell commands from blocking the agent; long commands move to the background automatically |
-| [claude-usage](extensions/claude-usage) | `@joaomj/pi-claude-usage` | Shows remaining Claude subscription quota (5-hour and weekly) in the footer |
+| [claude-usage](extensions/claude-usage) | `@joaomj/pi-claude-usage` | Shows remaining Claude subscription quota (5-hour and weekly) in the footer while the session uses Claude |
 
 ## Develop
 
