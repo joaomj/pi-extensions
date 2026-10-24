@@ -3,7 +3,7 @@
 Pi extension that shows your remaining Claude subscription quota — the 5-hour session window and the weekly window — as a segment in Pi's footer while the session uses Claude.
 
 ```text
-claude 5h:100% wk:91% ↻1d21h
+claude 5h:100% ↻4h12m wk:91% ↻1d21h
 ```
 
 ## Requirements
@@ -30,7 +30,12 @@ Sessions that use another provider do not load the quota code, read your Claude 
 
 The extension loads in the background after a Claude session starts. When a cached value exists, it appears immediately. Keychain and network work starts two seconds after the session starts, and only when the cached value is missing or older than five minutes. Switching to a non-Claude model clears the segment. Switching back restores it from the cache.
 
-After each agent run, the extension refreshes the value. It sends at most one usage request per minute and caches API results for five minutes, so the footer never slows down your session.
+The footer stays current for the whole session:
+
+- It re-renders every 15 seconds, so the reset countdown keeps ticking between requests.
+- It requests fresh numbers when a run starts, at each turn boundary, and when a run settles.
+- Requests are throttled to at most one per minute, and a window whose reset time has passed triggers one more request so the percentage jumps back up instead of staying stale.
+- The five-minute cache only avoids network work in the first seconds after a session starts.
 
 ### Choose an account
 

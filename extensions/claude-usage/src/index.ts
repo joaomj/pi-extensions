@@ -83,12 +83,18 @@ export default function (pi: ExtensionAPI) {
 		if (activeSessionId === id) deactivate(ctx);
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
+	// Follow usage while the run is in progress, not only when it settles.
+	// The usage module throttles the requests, so extra events cost nothing.
+	function poke(ctx: ExtensionContext): void {
 		if (activeSessionId !== sessionId(ctx)) return;
 		void service()
-			.then((usage) => usage.settle(ctx))
+			.then((usage) => usage.poke(ctx))
 			.catch((error: unknown) => report(ctx, error));
-	});
+	}
+
+	pi.on("agent_start", (_event, ctx) => poke(ctx));
+	pi.on("turn_end", (_event, ctx) => poke(ctx));
+	pi.on("agent_settled", (_event, ctx) => poke(ctx));
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (activeSessionId === sessionId(ctx)) deactivate(ctx);

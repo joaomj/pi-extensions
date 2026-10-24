@@ -27,8 +27,13 @@ const USAGE_HOST = "api.anthropic.com";
 const USAGE_PATH = "/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
+// Startup may trust a cache this old without contacting the network.
+// During a session every refresh is throttled by MIN_FETCH_INTERVAL_MS only,
+// so the footer follows usage within about a minute instead of five.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MIN_FETCH_INTERVAL_MS = 60 * 1000;
+// Local re-render cadence: keeps the reset countdown live between fetches.
+const TICK_INTERVAL_MS = 15 * 1000;
 const CANDIDATE_CACHE_TTL_MS = 5 * 60 * 1000;
 const STARTUP_REFRESH_DELAY_MS = 2_000;
 const PROBE_TIMEOUT_MS = 6_000;
@@ -42,7 +47,7 @@ type Candidate = { id: string; label: string };
 export type ClaudeUsage = {
 	activate(ctx: ExtensionContext): Promise<void>;
 	deactivate(ctx: ExtensionContext): void;
-	settle(ctx: ExtensionContext): Promise<void>;
+	poke(ctx: ExtensionContext): Promise<void>;
 	runCommand(args: string, ctx: ExtensionContext, sessionActive: boolean): Promise<void>;
 };
 
@@ -301,7 +306,11 @@ function formatReset(iso: string | null): string | null {
 
 function formatStatus(snapshot: Snapshot): string | null {
 	const parts = ["claude"];
-	if (snapshot.session) parts.push(`5h:${snapshot.session.remaining}%`);
+	if (snapshot.session) {
+		parts.push(`5h:${snapshot.session.remaining}%`);
+		const reset = formatReset(snapshot.session.resetsAt);
+		if (reset) parts.push(`\u21bb${reset}`);
+	}
 	if (snapshot.weekly) {
 		parts.push(`wk:${snapshot.weekly.remaining}%`);
 		const reset = formatReset(snapshot.weekly.resetsAt);
@@ -328,20 +337,25 @@ export function createClaudeUsage(): ClaudeUsage {
 	let candidateCache: { at: number; candidates: Candidate[] } | undefined;
 	let lastAttempt = 0;
 	let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+	let tickTimer: ReturnType<typeof setInterval> | undefined;
 	let inFlight: AbortController | undefined;
 	let generation = 0;
 	let active: { sessionId: string; ctx: ExtensionContext } | undefined;
 	let failureReported = false;
+	let lastStatus: string | undefined;
 
 	function isActive(ctx: ExtensionContext): boolean {
 		return active !== undefined && active.sessionId === sessionIdOf(ctx);
 	}
 
 	function setStatus(ctx: ExtensionContext, text: string | undefined): void {
+		if (text === lastStatus) return;
+		lastStatus = text;
 		try {
 			ctx.ui.setStatus(STATUS_KEY, text);
 		} catch {
 			// Session replacement can invalidate the context; the next event refreshes.
+			lastStatus = undefined;
 		}
 	}
 
@@ -364,6 +378,7 @@ export function createClaudeUsage(): ClaudeUsage {
 
 	function cancelRefresh(): void {
 		cancelTimer();
+		stopTicker();
 		inFlight?.abort();
 		inFlight = undefined;
 	}
@@ -471,10 +486,6 @@ export function createClaudeUsage(): ClaudeUsage {
 					})
 				: candidates;
 		for (const candidate of ordered) {
-			const cached = snapshots[candidate.id];
-			if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return { candidate, snapshot: cached };
-		}
-		for (const candidate of ordered) {
 			if (signal.aborted) return null;
 			const snapshot = await probe(candidate, signal);
 			if (snapshot) {
@@ -494,6 +505,7 @@ export function createClaudeUsage(): ClaudeUsage {
 	async function refresh(ctx: ExtensionContext, force: boolean): Promise<void> {
 		if (!isActive(ctx)) return;
 		const gen = generation;
+		cancelTimer();
 		const now = Date.now();
 		await loadState();
 		if (!force && now - lastAttempt < MIN_FETCH_INTERVAL_MS) {
@@ -501,11 +513,6 @@ export function createClaudeUsage(): ClaudeUsage {
 			return;
 		}
 		const selection = await loadSelection();
-		const cached = bestSnapshot(selection);
-		if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
-			setStatus(ctx, formatStatus(cached) ?? undefined);
-			return;
-		}
 		lastAttempt = now;
 		inFlight?.abort();
 		const controller = new AbortController();
@@ -517,6 +524,40 @@ export function createClaudeUsage(): ClaudeUsage {
 		} finally {
 			if (inFlight === controller) inFlight = undefined;
 		}
+	}
+
+	function resetDue(snapshot: Snapshot | undefined): boolean {
+		if (!snapshot) return false;
+		return [snapshot.session, snapshot.weekly].some((window) => {
+			if (!window?.resetsAt) return false;
+			const at = Date.parse(window.resetsAt);
+			return Number.isFinite(at) && Date.now() >= at;
+		});
+	}
+
+	function stopTicker(): void {
+		if (tickTimer === undefined) return;
+		clearInterval(tickTimer);
+		tickTimer = undefined;
+	}
+
+	/**
+	 * Re-render from the current snapshot on a short cadence so the reset
+	 * countdown moves, and fetch once when a window's reset time has passed
+	 * (the cached percentage is stale by definition at that point).
+	 */
+	function startTicker(ctx: ExtensionContext): void {
+		stopTicker();
+		const gen = generation;
+		const timer = setInterval(() => {
+			if (gen !== generation || !isActive(ctx)) return;
+			showCached(ctx);
+			if (resetDue(bestSnapshot(selectedId))) {
+				void refresh(ctx, false).catch((error: unknown) => report(ctx, error));
+			}
+		}, TICK_INTERVAL_MS);
+		timer.unref?.();
+		tickTimer = timer;
 	}
 
 	function scheduleRefresh(ctx: ExtensionContext, delayMs: number): void {
@@ -539,6 +580,9 @@ export function createClaudeUsage(): ClaudeUsage {
 		generation++;
 		cancelRefresh();
 		active = { sessionId: id, ctx };
+		// Pi clears extension statuses when a session is replaced, so the first
+		// paint of a new session must reach the footer even if the text matches.
+		lastStatus = undefined;
 		const gen = generation;
 		await loadState();
 		if (gen !== generation || !isActive(ctx)) return;
@@ -546,6 +590,7 @@ export function createClaudeUsage(): ClaudeUsage {
 		if (gen !== generation || !isActive(ctx)) return;
 		const cached = bestSnapshot(selectedId);
 		if (cached) setStatus(ctx, formatStatus(cached) ?? undefined);
+		startTicker(ctx);
 		// A fresh cache needs no startup work. Otherwise refresh after the
 		// session has started, so Keychain and network work stay off that path.
 		if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return;
@@ -623,7 +668,7 @@ export function createClaudeUsage(): ClaudeUsage {
 	return {
 		activate,
 		deactivate,
-		settle: async (ctx) => {
+		poke: async (ctx) => {
 			if (!isActive(ctx)) return;
 			await refresh(ctx, false);
 		},
